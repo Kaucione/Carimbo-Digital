@@ -1,0 +1,125 @@
+!pip install pymupdf reportlab pytz
+
+import base64
+import fitz
+import pytz
+import os
+from io import BytesIO
+from datetime import datetime
+from reportlab.pdfgen import canvas
+from reportlab.lib.utils import ImageReader
+from reportlab.lib.units import mm
+from google.colab import files
+
+# ===== Banco de dados local de servidores =====
+servidores = {
+    "1": {"nome": "NaN", "cargo": "Técnico",  "matricula": "NaN"},
+    "2": {"nome": "NaN",    "cargo": "Supervisora", "matricula": "NaN"},
+    "3": {"nome": "NaN",        "cargo": "Gerente",     "matricula": "NaN"},
+}
+
+# ===== Escolha do servidor =====
+print("Escolha o servidor ou digite manualmente:")
+print("1 - SERVIDOR1)
+print("2 - SERVIDOR2")
+print("3 - SERVIDOR3")
+print("0 - Digitar manualmente")
+
+opcao = input("Digite a opção (0 a 3): ").strip()
+
+if opcao in servidores:
+    dados     = servidores[opcao]
+    nome      = dados["nome"]
+    cargo     = dados["cargo"]
+    matricula = dados["matricula"]
+else:
+    nome      = input("Digite o nome do servidor: ").strip()
+    cargo     = input("Digite o cargo do servidor: ").strip()
+    matricula = input("Digite a matrícula do servidor: ").strip()
+
+# ===== Data e hora de Brasília =====
+fuso_brasilia = pytz.timezone('America/Sao_Paulo')
+agora         = datetime.now(fuso_brasilia)
+data_hora     = agora.strftime('%d/%m/%Y %H:%M:%S')
+
+# ===== Escolha da quantidade de arquivos =====
+
+print("Envie o(s) PDF(s) para assinatura:")
+uploaded = files.upload()
+arquivos = list(uploaded.keys())
+
+# ===== Linhas do carimbo =====
+linhas = [
+    "ESTADO DE ALAGOAS",
+    "SECRETARIA DE ESTADO ",
+    "CNPJ: ",
+    "SETOR",
+    "",
+    "ESTE DOCUMENTO AUTENTICADO CONFERE COM O ORIGINAL.",
+    "",
+    nome.upper(),
+    cargo.title(),
+    f"Matrícula: {matricula}",
+    f"Maceió, {data_hora}",
+]
+
+# ===== Logo em base64 =====
+logo_base64 = """
+iVBORw0KGgoAAA"""  # (trunca‑se para caber)
+
+logo_bytes = BytesIO(base64.b64decode(logo_base64))
+logo_img   = ImageReader(logo_bytes)
+
+# ===== Função para gerar carimbo PDF =====
+def gerar_carimbo():
+    largura_canvas, altura_canvas = 95 * mm, 58 * mm
+    carimbo_buffer = BytesIO()
+    c = canvas.Canvas(carimbo_buffer, pagesize=(largura_canvas, altura_canvas))
+
+    # ––– Logo centralizado –––
+    logo_w, logo_h = 18, 18
+    x_logo = (largura_canvas - logo_w) / 2
+    y_logo = altura_canvas - logo_h - 5
+    c.drawImage(logo_img, x_logo, y_logo, width=logo_w, height=logo_h, preserveAspectRatio=True, mask='auto')
+
+    # ––– Texto –––
+    espaco_linha = 12
+    y = y_logo - espaco_linha
+    c.setFillColorRGB(0, 0, 0)
+
+    for i, linha in enumerate(linhas):
+        fonte = "Helvetica-Bold"
+        tamanho = 8
+        c.setFont(fonte, tamanho)
+        largura_texto = c.stringWidth(linha, fonte, tamanho)
+        x_central = (largura_canvas - largura_texto) / 2
+        c.drawString(x_central, y, linha)
+        y -= espaco_linha
+
+    # ––– Moldura –––
+    margem = 2
+    c.setLineWidth(1)
+    c.setStrokeColorRGB(0, 0, 0)
+    c.rect(margem, margem, largura_canvas - 2*margem, altura_canvas - 2*margem)
+
+    c.save()
+    carimbo_buffer.seek(0)
+    return fitz.open("pdf", carimbo_buffer.read())
+
+carimbo_pdf = gerar_carimbo()
+
+# ===== Assinar cada arquivo enviado =====
+for nome_arquivo in arquivos:
+    with fitz.open(nome_arquivo) as doc:
+        for page in doc:
+            page_w = page.rect.width
+            carimbo_w = carimbo_pdf[0].rect.width
+            carimbo_h = carimbo_pdf[0].rect.height
+            x = (page_w - carimbo_w) / 2
+            y = 5  # margem superior
+            rect = fitz.Rect(x, y, x + carimbo_w, y + carimbo_h)
+            page.show_pdf_page(rect, carimbo_pdf, 0)
+
+        saida = f"assinado_{nome_arquivo}"
+        doc.save(saida)
+        files.download(saida)
